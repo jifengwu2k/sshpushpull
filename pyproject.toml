@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sshpushpull"
+version = "0.1.0a1"
+description = "Dead simple, jargon-free Python tool to make a local TCP port available on a remote host or make a remote TCP port available locally."
+readme = "README.md"
+requires-python = ">=2"
+license = "MIT"
+authors = [
+  { name="Jifeng Wu", email="jifengwu2k@gmail.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 2",
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "enum34; python_version < '3.4'",
+    "paramiko",
+    "typing; python_version < '3.5'"
+]
+
+[project.scripts]
+sshpushpull = "sshpushpull:main"
+
+[project.urls]
+"Homepage" = "https://github.com/jifengwu2k/sshpushpull"
+"Bug Tracker" = "https://github.com/jifengwu2k/sshpushpull/issues"
