@@ -52,7 +52,7 @@ class Runtime(object):
         "publickey",
         "local_port",
         "remote_port",
-        "local_only",
+        "localhost_only",
         "state",
         "transport",
         "transport_sock",
@@ -77,7 +77,7 @@ class Runtime(object):
         publickey,
         local_port,
         remote_port,
-        local_only=False,
+        localhost_only=False,
     ):
         # type: (str, str, int, str, Optional[str], Optional[paramiko.PKey], int, int, bool) -> None
         self.mode = mode  # type: str
@@ -88,7 +88,7 @@ class Runtime(object):
         self.publickey = publickey  # type: Optional[paramiko.PKey]
         self.local_port = local_port  # type: int
         self.remote_port = remote_port  # type: int
-        self.local_only = local_only  # type: bool
+        self.localhost_only = localhost_only  # type: bool
         self.state = ConnState.STARTING  # type: ConnState
         self.transport = None  # type: Optional[paramiko.Transport]
         self.transport_sock = None  # type: Optional[socket.socket]
@@ -263,7 +263,7 @@ def activate_forward(ctx):
     if transport is None or not transport.is_active():
         return False
 
-    bind_host = "localhost" if ctx.local_only else ""
+    bind_host = "localhost" if ctx.localhost_only else ""
     try:
         active_port = transport.request_port_forward(
             bind_host,
@@ -278,7 +278,7 @@ def activate_forward(ctx):
         logging.info(
             "[push] remote port forwarding active: %s:%s -> localhost:%s"
             % (
-                "localhost" if ctx.local_only else "0.0.0.0",
+                "localhost" if ctx.localhost_only else "0.0.0.0",
                 active_port,
                 ctx.local_port,
             )
@@ -305,7 +305,7 @@ def cancel_forward(ctx):
     transport = get_transport(ctx)
     if transport is not None and transport.is_active() and forward_port is not None:
         try:
-            bind_host = "localhost" if ctx.local_only else ""
+            bind_host = "localhost" if ctx.localhost_only else ""
             transport.cancel_port_forward(bind_host, forward_port)
             logging.info("[push] cancelled remote forward %s" % (forward_port,))
         except Exception:
@@ -472,7 +472,7 @@ def app(ctx):
                         close_transport(ctx)
                         set_state(ctx, ConnState.RECONNECT_WAIT, "forward activation failed")
                         continue
-                    access_str = "open on localhost only" if ctx.local_only else "open on all interfaces"
+                    access_str = "open on localhost only" if ctx.localhost_only else "open on all interfaces"
                     logging.info(
                         "Pushing localhost:%s on your machine to %s (%s) via ssh -p %s %s@%s (Press Ctrl+C to stop)"
                         % (
@@ -535,7 +535,7 @@ def app(ctx):
                         close_transport(ctx)
                         set_state(ctx, ConnState.RECONNECT_WAIT, "reconnected but forward activation failed")
                         continue
-                    access_str = "open on localhost only" if ctx.local_only else "open on all interfaces"
+                    access_str = "open on localhost only" if ctx.localhost_only else "open on all interfaces"
                     logging.info(
                         "Reconnected. Pushing localhost:%s to %s (%s) via ssh -p %s %s@%s"
                         % (
@@ -637,7 +637,7 @@ def main():
         help="remote TCP port to push to",
     )
     push_parser.add_argument(
-        "--local-only",
+        "--localhost-only",
         action="store_true",
         default=False,
         help="open remote port on localhost only",
@@ -716,7 +716,7 @@ def main():
         publickey=publickey,
         local_port=args.local_port,
         remote_port=args.remote_port,
-        local_only=getattr(args, "local_only", False),
+        localhost_only=getattr(args, "localhost_only", False),
     )
     return app(ctx)
 

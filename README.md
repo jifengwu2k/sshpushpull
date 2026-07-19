@@ -49,7 +49,7 @@ sshpushpull push \
     --host <host> \
     [--port <ssh_port>] \
     [--password <pwd> | --rsa-key <path> | --ed25519-key <path>] \
-    [--local-only]
+    [--localhost-only]
 ```
 
 | Option | Description |
@@ -62,7 +62,7 @@ sshpushpull push \
 | `--password` | Password for SSH authentication |
 | `--rsa-key` | Path to RSA private key for SSH authentication |
 | `--ed25519-key` | Path to Ed25519 private key for SSH authentication |
-| `--local-only` | Open remote port on localhost only (default: open on all interfaces) |
+| `--localhost-only` | Open remote port on localhost only (default: open on all interfaces) |
 
 **Examples:**
 
@@ -77,7 +77,7 @@ sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.
 sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.example.com --port 2222 --rsa-key ~/.ssh/id_rsa
 
 # Only allow access from the remote host's own localhost
-sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.example.com --ed25519-key ~/.ssh/id_ed25519 --local-only
+sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.example.com --ed25519-key ~/.ssh/id_ed25519 --localhost-only
 ```
 
 ### Pull: Access a remote port locally
