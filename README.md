@@ -54,8 +54,8 @@ sshpushpull push \
 
 | Option | Description |
 |--------|-------------|
-| `--local-port` | Local TCP port to push from |
-| `--remote-port` | Remote TCP port to push to |
+| `--local-port` | Local TCP port to push from (repeatable for multiple ports) |
+| `--remote-port` | Remote TCP port to push to (repeatable for multiple ports) |
 | `--username` | SSH username on the remote host |
 | `--host` | Remote SSH host name or address |
 | `--port` | SSH server port (default: 22) |
@@ -76,6 +76,15 @@ sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.
 # If SSH is running on port 2222
 sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.example.com --port 2222 --rsa-key ~/.ssh/id_rsa
 
+# Push multiple ports at once
+sshpushpull push \
+    --host dev.example.com \
+    --username dev \
+    --ed25519-key ~/.ssh/id_ed25519 \
+    --local-port 3000 --remote-port 3001 \
+    --local-port 4000 --remote-port 4001 \
+    --local-port 8080 --remote-port 9090
+
 # Only allow access from the remote host's own localhost
 sshpushpull push --local-port 3000 --remote-port 3001 --username dev --host dev.example.com --ed25519-key ~/.ssh/id_ed25519 --localhost-only
 ```
@@ -94,8 +103,8 @@ sshpushpull pull \
 
 | Option | Description |
 |--------|-------------|
-| `--remote-port` | Remote TCP port to pull from |
-| `--local-port` | Local TCP port to pull to |
+| `--remote-port` | Remote TCP port to pull from (repeatable for multiple ports) |
+| `--local-port` | Local TCP port to pull to (repeatable for multiple ports) |
 | `--username` | SSH username on the remote host |
 | `--host` | Remote SSH host name or address |
 | `--port` | SSH server port (default: 22) |
@@ -112,9 +121,42 @@ sshpushpull pull --remote-port 3306 --local-port 3307 --username admin --host db
 # Using an Ed25519 key
 sshpushpull pull --remote-port 3306 --local-port 3307 --username admin --host db.internal --ed25519-key ~/.ssh/id_ed25519
 
+# Pull multiple ports at once
+sshpushpull pull \
+    --host db.internal \
+    --username admin \
+    --password secret \
+    --local-port 3307 --remote-port 3306 \
+    --local-port 5433 --remote-port 5432
+
 # If SSH is running on port 2222
 sshpushpull pull --remote-port 3306 --local-port 3307 --username admin --host db.internal --port 2222 --rsa-key ~/.ssh/id_rsa
 ```
+
+## Multiple Ports
+
+Both `push` and `pull` support forwarding multiple ports over a single SSH connection. Simply repeat `--local-port` and `--remote-port` in matched pairs:
+
+```bash
+# Push: expose three local services on the remote host
+sshpushpull push \
+    --host dev.example.com \
+    --username dev \
+    --ed25519-key ~/.ssh/id_ed25519 \
+    --local-port 3000 --remote-port 3001 \
+    --local-port 4000 --remote-port 4001 \
+    --local-port 8080 --remote-port 9090
+
+# Pull: access remote database and cache locally
+sshpushpull pull \
+    --host db.internal \
+    --username admin \
+    --password secret \
+    --local-port 3307 --remote-port 3306 \
+    --local-port 6380 --remote-port 6379
+```
+
+Ports are paired by position: the first `--local-port` with the first `--remote-port`, the second with the second, and so on. All mappings share a single SSH connection and reconnect together.
 
 ## Foreground Operation: Visibility Over Stealth
 

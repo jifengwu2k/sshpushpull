@@ -12,9 +12,12 @@ import threading
 import time
 
 from enum import Enum
-from typing import Callable, Optional, Tuple, Union
+from collections import namedtuple
+from typing import Callable, List, Optional, Tuple, Union
 
 import paramiko  # type: ignore[import-untyped]
+
+PortMapping = namedtuple("PortMapping", ["local_port", "remote_port"])
 
 if sys.version_info[0] == 2:
     TEXT_TYPE = unicode  # type: ignore[name-defined]
@@ -50,8 +53,7 @@ class Runtime(object):
         "username",
         "password",
         "publickey",
-        "local_port",
-        "remote_port",
+        "mappings",
         "localhost_only",
         "state",
         "transport",
@@ -62,9 +64,9 @@ class Runtime(object):
         "max_backoff",
         "lock",
         "forward_active",
-        "forward_port",
-        "listener",
-        "accept_thread",
+        "forward_ports",
+        "listeners",
+        "accept_threads",
     )
 
     def __init__(
@@ -75,19 +77,17 @@ class Runtime(object):
         username,
         password,
         publickey,
-        local_port,
-        remote_port,
+        mappings,
         localhost_only=False,
     ):
-        # type: (str, str, int, str, Optional[str], Optional[paramiko.PKey], int, int, bool) -> None
+        # type: (str, str, int, str, Optional[str], Optional[paramiko.PKey], List[PortMapping], bool) -> None
         self.mode = mode  # type: str
         self.host = host  # type: str
         self.port = port  # type: int
         self.username = username  # type: str
         self.password = password  # type: Optional[str]
         self.publickey = publickey  # type: Optional[paramiko.PKey]
-        self.local_port = local_port  # type: int
-        self.remote_port = remote_port  # type: int
+        self.mappings = mappings  # type: List[PortMapping]
         self.localhost_only = localhost_only  # type: bool
         self.state = ConnState.STARTING  # type: ConnState
         self.transport = None  # type: Optional[paramiko.Transport]
@@ -98,9 +98,9 @@ class Runtime(object):
         self.max_backoff = 10  # type: int
         self.lock = threading.RLock()
         self.forward_active = False  # type: bool
-        self.forward_port = None  # type: Optional[int]
-        self.listener = None  # type: Optional[socket.socket]
-        self.accept_thread = None  # type: Optional[threading.Thread]
+        self.forward_ports = []  # type: List[int]
+        self.listeners = []  # type: List[socket.socket]
+        self.accept_threads = []  # type: List[threading.Thread]
 
 
 class SignalStopHandler(object):
@@ -228,8 +228,8 @@ def safe_close_socket(sock):
 # ---------------------------------------------------------------------------
 
 
-def push_forwarded_handler(ctx, channel, origin, server):
-    # type: (Runtime, paramiko.Channel, Tuple[str, int], Tuple[str, int]) -> None
+def push_forwarded_handler(ctx, channel, origin, server, local_port):
+    # type: (Runtime, paramiko.Channel, Tuple[str, int], Tuple[str, int], int) -> None
     del origin
     del server
 
@@ -237,7 +237,7 @@ def push_forwarded_handler(ctx, channel, origin, server):
         # type: () -> None
         local_sock = None  # type: Optional[socket.socket]
         try:
-            local_sock = socket.create_connection(("localhost", ctx.local_port), timeout=10)
+            local_sock = socket.create_connection(("localhost", local_port), timeout=10)
             bidirectional_bridge(local_sock, channel)
         except Exception as error:
             errno_val = getattr(error, "errno", None)
@@ -245,7 +245,7 @@ def push_forwarded_handler(ctx, channel, origin, server):
                 logging.info(
                     "[push] Connection refused: nothing is listening on localhost:%s. "
                     "Check that your local service is running (e.g. 'ss -tlnp | grep %s' or 'netstat -tlnp | grep %s')."
-                    % (ctx.local_port, ctx.local_port, ctx.local_port)
+                    % (local_port, local_port, local_port)
                 )
             else:
                 logging.info("[push] failed to bridge incoming forwarded connection: %s" % (error,))
@@ -264,52 +264,48 @@ def activate_forward(ctx):
         return False
 
     bind_host = "localhost" if ctx.localhost_only else ""
-    try:
-        active_port = transport.request_port_forward(
-            bind_host,
-            ctx.remote_port,
-            handler=lambda channel, origin, server: push_forwarded_handler(
-                ctx, channel, origin, server
-            ),
-        )
-        with ctx.lock:
-            ctx.forward_active = True
-            ctx.forward_port = active_port
-        logging.info(
-            "[push] remote port forwarding active: %s:%s -> localhost:%s"
-            % (
-                "localhost" if ctx.localhost_only else "0.0.0.0",
-                active_port,
-                ctx.local_port,
+    bind_label = "localhost" if ctx.localhost_only else "0.0.0.0"
+    all_ok = True
+    for mapping in ctx.mappings:
+        try:
+            active_port = transport.request_port_forward(
+                bind_host,
+                mapping.remote_port,
+                handler=lambda channel, origin, server, lp=mapping.local_port: push_forwarded_handler(
+                    ctx, channel, origin, server, lp
+                ),
             )
-        )
-        return True
-    except Exception as error:
-        logging.info(
-            "[push] failed to request remote forward %s:%s: %s"
-            % (
-                bind_host if bind_host else "0.0.0.0",
-                ctx.remote_port,
-                error,
+            with ctx.lock:
+                ctx.forward_active = True
+                ctx.forward_ports.append(active_port)
+            logging.info(
+                "[push] remote port forwarding active: %s:%s -> localhost:%s"
+                % (bind_label, active_port, mapping.local_port)
             )
-        )
-        return False
+        except Exception as error:
+            all_ok = False
+            logging.info(
+                "[push] failed to request remote forward %s:%s: %s"
+                % (bind_label, mapping.remote_port, error)
+            )
+    return all_ok
 
 
 def cancel_forward(ctx):
     # type: (Runtime) -> None
-    with ctx.lock:
-        forward_port = ctx.forward_port
-        ctx.forward_active = False
-        ctx.forward_port = None
+    bind_host = "localhost" if ctx.localhost_only else ""
     transport = get_transport(ctx)
-    if transport is not None and transport.is_active() and forward_port is not None:
-        try:
-            bind_host = "localhost" if ctx.localhost_only else ""
-            transport.cancel_port_forward(bind_host, forward_port)
-            logging.info("[push] cancelled remote forward %s" % (forward_port,))
-        except Exception:
-            logging.info("[cleanup] ignored remote forward cancel failure")
+    with ctx.lock:
+        forward_ports = list(ctx.forward_ports)
+        ctx.forward_active = False
+        ctx.forward_ports = []
+    for port in forward_ports:
+        if transport is not None and transport.is_active():
+            try:
+                transport.cancel_port_forward(bind_host, port)
+                logging.info("[push] cancelled remote forward %s" % (port,))
+            except Exception:
+                logging.info("[cleanup] ignored remote forward cancel failure")
 
 
 # ---------------------------------------------------------------------------
@@ -326,22 +322,31 @@ def bind_local_listener(local_port):
     return sock
 
 
-def close_listener(ctx):
+def close_listeners(ctx):
     # type: (Runtime) -> None
-    listener = ctx.listener
-    if listener is not None:
+    listeners = ctx.listeners
+    ctx.listeners = []
+    for listener in listeners:
+        if listener is not None:
+            try:
+                listener.close()
+            except Exception:
+                logging.info("[cleanup] ignored listener close failure")
+
+
+def accept_loop(ctx, mapping):
+    # type: (Runtime, PortMapping) -> None
+    # Find the listener that matches this mapping's local_port
+    listener = None
+    for l in ctx.listeners:
         try:
-            listener.close()
+            if l.getsockname()[1] == mapping.local_port:
+                listener = l
+                break
         except Exception:
-            logging.info("[cleanup] ignored listener close failure")
-        ctx.listener = None
-
-
-def accept_loop(ctx):
-    # type: (Runtime) -> None
-    listener = ctx.listener
+            pass
     if listener is None:
-        raise RuntimeError("listener not initialized")
+        raise RuntimeError("listener not initialized for local_port %s" % mapping.local_port)
     while not ctx.stop_requested:
         try:
             client_sock, client_addr = listener.accept()
@@ -357,14 +362,14 @@ def accept_loop(ctx):
             break
         thread = make_thread(
             handle_pull_client,
-            (ctx, client_sock, client_addr),
-            "pull-client-%s" % (client_addr[1],),
+            (ctx, client_sock, client_addr, mapping),
+            "pull-client-%s-%s" % (mapping.local_port, client_addr[1]),
         )
         thread.start()
 
 
-def handle_pull_client(ctx, client_sock, client_addr):
-    # type: (Runtime, socket.socket, Tuple[str, int]) -> None
+def handle_pull_client(ctx, client_sock, client_addr, mapping):
+    # type: (Runtime, socket.socket, Tuple[str, int], PortMapping) -> None
     channel = None  # type: Optional[paramiko.Channel]
     try:
         transport = get_transport(ctx)
@@ -373,7 +378,7 @@ def handle_pull_client(ctx, client_sock, client_addr):
 
         channel = transport.open_channel(
             kind="direct-tcpip",
-            dest_addr=("localhost", ctx.remote_port),
+            dest_addr=("localhost", mapping.remote_port),
             src_addr=client_addr,
         )
         if channel is None:
@@ -382,8 +387,8 @@ def handle_pull_client(ctx, client_sock, client_addr):
         logging.info(
             "[pull] forwarding localhost:%s -> remote localhost:%s for %s:%s"
             % (
-                ctx.local_port,
-                ctx.remote_port,
+                mapping.local_port,
+                mapping.remote_port,
                 client_addr[0],
                 client_addr[1],
             )
@@ -453,9 +458,12 @@ def app(ctx):
 
         if ctx.state == ConnState.STARTING:
             if ctx.mode == "pull":
-                ctx.listener = bind_local_listener(ctx.local_port)
-                ctx.accept_thread = make_thread(accept_loop, (ctx,), "accept-loop")
-                ctx.accept_thread.start()
+                for mapping in ctx.mappings:
+                    listener = bind_local_listener(mapping.local_port)
+                    ctx.listeners.append(listener)
+                    t = make_thread(accept_loop, (ctx, mapping), "accept-loop-%s" % (mapping.local_port,))
+                    ctx.accept_threads.append(t)
+                    t.start()
             set_state(ctx, ConnState.CONNECTING, "%s mode ready" % (ctx.mode,))
 
         elif ctx.state == ConnState.CONNECTING:
@@ -473,11 +481,11 @@ def app(ctx):
                         set_state(ctx, ConnState.RECONNECT_WAIT, "forward activation failed")
                         continue
                     access_str = "open on localhost only" if ctx.localhost_only else "open on all interfaces"
+                    mapping_str = ", ".join("localhost:%s->%s" % (m.local_port, m.remote_port) for m in ctx.mappings)
                     logging.info(
-                        "Pushing localhost:%s on your machine to %s (%s) via ssh -p %s %s@%s (Press Ctrl+C to stop)"
+                        "Pushing %s (%s) via ssh -p %s %s@%s (Press Ctrl+C to stop)"
                         % (
-                            ctx.local_port,
-                            ctx.remote_port,
+                            mapping_str,
                             access_str,
                             ctx.port,
                             ctx.username,
@@ -485,14 +493,14 @@ def app(ctx):
                         )
                     )
                 else:
+                    mapping_str = ", ".join("localhost:%s<-%s" % (m.local_port, m.remote_port) for m in ctx.mappings)
                     logging.info(
-                        "Pulling localhost:%s on ssh -p %s %s@%s to localhost:%s on your machine (Press Ctrl+C to stop)"
+                        "Pulling %s via ssh -p %s %s@%s (Press Ctrl+C to stop)"
                         % (
-                            ctx.remote_port,
+                            mapping_str,
                             ctx.port,
                             ctx.username,
                             ctx.host,
-                            ctx.local_port,
                         )
                     )
                 set_state(ctx, ConnState.CONNECTED, "upstream connect ok")
@@ -536,11 +544,11 @@ def app(ctx):
                         set_state(ctx, ConnState.RECONNECT_WAIT, "reconnected but forward activation failed")
                         continue
                     access_str = "open on localhost only" if ctx.localhost_only else "open on all interfaces"
+                    mapping_str = ", ".join("localhost:%s->%s" % (m.local_port, m.remote_port) for m in ctx.mappings)
                     logging.info(
-                        "Reconnected. Pushing localhost:%s to %s (%s) via ssh -p %s %s@%s"
+                        "Reconnected. Pushing %s (%s) via ssh -p %s %s@%s"
                         % (
-                            ctx.local_port,
-                            ctx.remote_port,
+                            mapping_str,
                             access_str,
                             ctx.port,
                             ctx.username,
@@ -548,14 +556,14 @@ def app(ctx):
                         )
                     )
                 else:
+                    mapping_str = ", ".join("localhost:%s<-%s" % (m.local_port, m.remote_port) for m in ctx.mappings)
                     logging.info(
-                        "Reconnected. Pulling localhost:%s on ssh -p %s %s@%s to localhost:%s"
+                        "Reconnected. Pulling %s via ssh -p %s %s@%s"
                         % (
-                            ctx.remote_port,
+                            mapping_str,
                             ctx.port,
                             ctx.username,
                             ctx.host,
-                            ctx.local_port,
                         )
                     )
                 set_state(ctx, ConnState.CONNECTED, "upstream reconnected")
@@ -570,7 +578,7 @@ def app(ctx):
             if ctx.mode == "push":
                 cancel_forward(ctx)
             else:
-                close_listener(ctx)
+                close_listeners(ctx)
             close_transport(ctx)
             set_state(ctx, ConnState.STOPPED, "cleanup complete")
 
@@ -626,15 +634,19 @@ def main():
     )
     push_parser.add_argument(
         "--local-port",
-        required=True,
+        required=False,
         type=int,
-        help="local TCP port to push from",
+        action="append",
+        default=[],
+        help="local TCP port to push from (repeatable for multiple ports)",
     )
     push_parser.add_argument(
         "--remote-port",
-        required=True,
+        required=False,
         type=int,
-        help="remote TCP port to push to",
+        action="append",
+        default=[],
+        help="remote TCP port to push to (repeatable for multiple ports)",
     )
     push_parser.add_argument(
         "--localhost-only",
@@ -679,15 +691,19 @@ def main():
     )
     pull_parser.add_argument(
         "--local-port",
-        required=True,
+        required=False,
         type=int,
-        help="local TCP port to pull to",
+        action="append",
+        default=[],
+        help="local TCP port to pull to (repeatable for multiple ports)",
     )
     pull_parser.add_argument(
         "--remote-port",
-        required=True,
+        required=False,
         type=int,
-        help="remote TCP port to pull from",
+        action="append",
+        default=[],
+        help="remote TCP port to pull from (repeatable for multiple ports)",
     )
 
     args = parser.parse_args()
@@ -695,6 +711,17 @@ def main():
     if args.mode not in ("push", "pull"):
         parser.print_help()
         return 1
+
+    local_ports = args.local_port or []
+    remote_ports = args.remote_port or []
+    if len(local_ports) != len(remote_ports):
+        parser.error(
+            "Number of --local-port (%s) and --remote-port (%s) must match"
+            % (len(local_ports), len(remote_ports))
+        )
+    if not local_ports:
+        parser.error("At least one --local-port and --remote-port pair is required")
+    mappings = [PortMapping(lp, rp) for lp, rp in zip(local_ports, remote_ports)]
 
     password = args.password  # type: Optional[str]
     publickey = None  # type: Optional[paramiko.PKey]
@@ -714,8 +741,7 @@ def main():
         username=args.username,
         password=password,
         publickey=publickey,
-        local_port=args.local_port,
-        remote_port=args.remote_port,
+        mappings=mappings,
         localhost_only=getattr(args, "localhost_only", False),
     )
     return app(ctx)

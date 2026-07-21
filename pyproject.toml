@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sshpushpull"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Dead simple, jargon-free Python tool to make a local TCP port available on a remote host or make a remote TCP port available locally."
 readme = "README.md"
 requires-python = ">=2"
